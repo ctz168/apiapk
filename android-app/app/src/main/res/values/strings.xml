@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ApiAPK</string>
+    <string name="server_running">API服务器运行中</string>
+    <string name="server_stopped">API服务器未启动</string>
+    <string name="capture_enabled">AI捕获已开启</string>
+    <string name="capture_disabled">AI捕获已关闭</string>
+    <string name="accessibility_not_enabled">无障碍服务未启用</string>
+    <string name="settings">设置</string>
+    <string name="view_logs">查看日志</string>
+    <string name="start_server">启动服务器</string>
+    <string name="stop_server">停止服务器</string>
+    <string name="server_url">服务器地址</string>
+    <string name="capture_stats">捕获统计</string>
+    <string name="test_connection">测试连接</string>
+    <string name="accessibility_description">ApiAPK无障碍服务：监控DeepSeek、豆包、小爱同学等AI应用的对话内容，将其通过本地API服务对外提供。仅捕获文本内容，不上传任何数据。</string>
+</resources>

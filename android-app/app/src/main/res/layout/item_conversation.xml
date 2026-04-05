@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<com.google.android.material.card.MaterialCardView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_margin="4dp"
+    app:cardBackgroundColor="@color/bg_card"
+    app:cardCornerRadius="8dp"
+    app:cardElevation="0dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:id="@+id/tv_app_name"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="DeepSeek"
+                android:textSize="18sp"
+                android:textColor="@color/cyan"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/tv_message_count"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="3 条消息"
+                android:textSize="12sp"
+                android:textColor="@color/text_secondary" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/tv_last_message"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="最后一条消息内容预览..."
+            android:textSize="14sp"
+            android:textColor="@color/text_primary"
+            android:maxLines="3"
+            android:ellipsize="end"
+            android:paddingTop="8dp" />
+
+        <TextView
+            android:id="@+id/tv_timestamp"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="2024-01-01 12:00:00"
+            android:textSize="12sp"
+            android:textColor="@color/text_secondary"
+            android:paddingTop="8dp" />
+
+    </LinearLayout>
+</com.google.android.material.card.MaterialCardView>

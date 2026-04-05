@@ -1,0 +1,50 @@
+{
+  "name": "apiapk",
+  "version": "1.0.0",
+  "description": "CLI tool for ApiAPK - AI Model I/O Capture & API Service for Android. Connect to DeepSeek, Doubao, and Xiaoai conversations via local API.",
+  "main": "lib/index.js",
+  "bin": {
+    "apiapk": "bin/cli.js"
+  },
+  "scripts": {
+    "start": "node bin/cli.js",
+    "test": "echo \"Tests not yet configured\" && exit 0"
+  },
+  "keywords": [
+    "apiapk",
+    "android",
+    "adb",
+    "deepseek",
+    "doubao",
+    "xiaoai",
+    "ai",
+    "capture",
+    "api",
+    "proxy",
+    "cli"
+  ],
+  "author": "ctz168",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ctz168/apiapk.git"
+  },
+  "dependencies": {
+    "commander": "^11.1.0",
+    "axios": "^1.6.2",
+    "chalk": "^4.1.2",
+    "ora": "^5.4.1",
+    "cli-table3": "^0.6.3",
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "ws": "^8.16.0"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "README.md"
+  ]
+}
