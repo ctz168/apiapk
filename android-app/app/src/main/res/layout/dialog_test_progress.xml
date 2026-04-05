@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="24dp"
+    android:background="@color/bg_card">
+
+    <TextView
+        android:id="@+id/tv_test_title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="🧪 端到端测试"
+        android:textSize="20sp"
+        android:textColor="@color/text_primary"
+        android:textStyle="bold"
+        android:paddingBottom="16dp" />
+
+    <TextView
+        android:id="@+id/tv_test_step"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="准备中..."
+        android:textSize="15sp"
+        android:textColor="@color/cyan"
+        android:paddingBottom="12dp" />
+
+    <ProgressBar
+        android:id="@+id/progress_test"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="12dp"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:indeterminate="true" />
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:maxHeight="200dp">
+
+        <TextView
+            android:id="@+id/tv_test_response"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textSize="14sp"
+            android:textColor="@color/text_primary"
+            android:lineSpacingExtra="4dp"
+            android:visibility="gone" />
+    </ScrollView>
+
+</LinearLayout>
