@@ -8,6 +8,7 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import com.apiapk.R
 import com.apiapk.model.ConversationStore
 import com.apiapk.model.ConversationSummary
 import com.google.gson.GsonBuilder

@@ -90,6 +90,56 @@ data class AIMessage(
     val metadata: Map<String, String> = emptyMap()
 )
 
+/**
+ * 流式增量片段 - AI模型逐token输出时，每次文本变化产生一个delta事件。
+ * 用于SSE（Server-Sent Events）推送给客户端，实现与原大模型一致的流式体验。
+ * 客户端收到的每个delta都是增量文本（不是全文），需要自行拼接。
+ *
+ * 例如DeepSeek输出"你好，我是"时可能产生3个delta：
+ *   delta1: "你好"
+ *   delta2: "，"
+ *   delta3: "我是"
+ * 最后收到一个finish_reason="stop"的delta表示生成完毕。
+ */
+data class StreamDelta(
+    @SerializedName("id")
+    val id: String,
+
+    @SerializedName("app")
+    val app: String,
+
+    @SerializedName("role")
+    val role: String,
+
+    @SerializedName("delta")
+    val delta: String,
+
+    @SerializedName("accumulated")
+    val accumulated: String,
+
+    @SerializedName("finishReason")
+    val finishReason: String? = null,
+
+    @SerializedName("timestamp")
+    val timestamp: Long = System.currentTimeMillis()
+) {
+    companion object {
+        const val FINISH_STOP = "stop"
+        const val FINISH_LENGTH = "length"
+        const val FINISH_ERROR = "error"
+
+        /** 创建一个文本增量 */
+        fun textDelta(id: String, app: String, role: String, delta: String, accumulated: String): StreamDelta {
+            return StreamDelta(id = id, app = app, role = role, delta = delta, accumulated = accumulated)
+        }
+
+        /** 创建一个结束标记 */
+        fun finish(id: String, app: String, role: String, accumulated: String, reason: String = FINISH_STOP): StreamDelta {
+            return StreamDelta(id = id, app = app, role = role, delta = "", accumulated = accumulated, finishReason = reason)
+        }
+    }
+}
+
 data class ConversationSummary(
     @SerializedName("id")
     val id: String,
@@ -139,7 +189,16 @@ data class ApiConfig(
     val autoStart: Boolean = false,
 
     @SerializedName("logLevel")
-    val logLevel: String = "INFO"
+    val logLevel: String = "INFO",
+
+    @SerializedName("streamDeltaInterval")
+    val streamDeltaInterval: Long = 150,
+
+    @SerializedName("streamIdleTimeout")
+    val streamIdleTimeout: Long = 30000,
+
+    @SerializedName("streamEnabled")
+    val streamEnabled: Boolean = true
 )
 
 data class ApiResponse(

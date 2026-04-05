@@ -5,6 +5,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import com.apiapk.R
 import com.apiapk.model.ApiConfig
 import com.apiapk.model.ConversationStore
 

@@ -10,7 +10,6 @@
         android:layout_height="wrap_content"
         android:orientation="vertical">
 
-        <!-- Header -->
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -24,7 +23,7 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="AI Model I/O Capture & API Service"
+            android:text="AI对话捕获 · 流式SSE · 分屏 · 后台持久"
             android:textSize="14sp"
             android:textColor="@color/text_secondary"
             android:gravity="center"
@@ -49,7 +48,7 @@
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="📡 服务器状态"
+                    android:text="📡 服务器"
                     android:textSize="18sp"
                     android:textColor="@color/text_primary"
                     android:textStyle="bold"
@@ -61,8 +60,16 @@
                     android:layout_height="wrap_content"
                     android:text="🔴 服务器未启动"
                     android:textSize="16sp"
-                    android:textColor="@color/red"
-                    android:paddingBottom="8dp" />
+                    android:paddingBottom="6dp" />
+
+                <TextView
+                    android:id="@+id/tv_bg_status"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="🔴 后台监控未启动"
+                    android:textSize="13sp"
+                    android:textColor="@color/text_secondary"
+                    android:paddingBottom="6dp" />
 
                 <TextView
                     android:id="@+id/tv_server_url"
@@ -112,7 +119,7 @@
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="🎯 AI捕获状态"
+                    android:text="🎯 AI捕获"
                     android:textSize="18sp"
                     android:textColor="@color/text_primary"
                     android:textStyle="bold"
@@ -124,7 +131,6 @@
                     android:layout_height="wrap_content"
                     android:text="🔴 无障碍服务未启用"
                     android:textSize="16sp"
-                    android:textColor="@color/red"
                     android:paddingBottom="12dp" />
 
                 <ToggleButton
@@ -138,7 +144,7 @@
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="支持: DeepSeek · 豆包 · 小爱同学"
+                    android:text="支持分屏: DeepSeek · 豆包 · 小爱同学\nAI应用需保持可见（前台/分屏）"
                     android:textSize="12sp"
                     android:textColor="@color/text_secondary"
                     android:paddingTop="8dp"
@@ -163,15 +169,6 @@
                 android:padding="20dp">
 
                 <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="📊 捕获统计"
-                    android:textSize="18sp"
-                    android:textColor="@color/text_primary"
-                    android:textStyle="bold"
-                    android:paddingBottom="12dp" />
-
-                <TextView
                     android:id="@+id/tv_stats"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -180,6 +177,16 @@
                     android:textColor="@color/cyan" />
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
+
+        <!-- Battery Optimization -->
+        <Button
+            android:id="@+id/btn_battery_opt"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="12dp"
+            android:text="🔋 电池优化白名单（防杀后台）"
+            android:textSize="13sp"
+            style="@style/Widget.MaterialComponents.Button.TextButton" />
 
         <!-- Action Buttons -->
         <LinearLayout
@@ -211,7 +218,7 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="v1.0.0 · npm: apiapk"
+            android:text="v2.0.0 · 流式SSE · 分屏 · 后台持久"
             android:textSize="12sp"
             android:textColor="@color/text_secondary"
             android:gravity="center"
