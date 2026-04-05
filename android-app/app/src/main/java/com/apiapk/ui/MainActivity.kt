@@ -11,6 +11,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
+import android.util.Log
 import android.view.View
 import android.widget.Button
 import android.widget.ProgressBar
@@ -33,26 +34,32 @@ import com.apiapk.service.BackgroundMonitorService
 import com.apiapk.util.AdbHelper
 
 /**
- * 主Activity v4 - 自动化捕获流程。
+ * 主Activity v5 - 修复无障碍检测和循环触发问题。
  *
- * 核心改进：
- *   1. 点击"开始捕获" → 检查无障碍权限 → 最小化APP → 后台自动打开DeepSeek/豆包
- *   2. 记住无障碍权限状态，首次才提示，以后直接最小化
- *   3. AICaptureService 首次检测到APP时自动发送"你好"
- *   4. 通知栏实时显示捕获状态
+ * v5 修复：
+ *   1. isAccessibilityServiceEnabled() 同时匹配短格式和长格式组件名
+ *   2. 用 skipToggleListener 标志防止初始化时循环触发
+ *   3. 去掉 updateUI() 里重复的 setOnClickListener 和弹窗逻辑
+ *   4. 确保 onResume 时不会误触发自动最小化
  */
 class MainActivity : AppCompatActivity() {
 
     companion object {
+        private const val TAG = "MainActivity"
         private const val PREF_NAME = "apiapk_prefs"
         private const val PREF_ACCESSIBILITY_GRANTED = "accessibility_granted"
-        private const val PREF_CAPTURE_STARTED_BEFORE = "capture_started_before"
+
+        // 无障碍服务组件 - 多种格式都检查（兼容不同Android版本存储方式）
+        private const val SERVICE_CLASS = "com.apiapk.service.AICaptureService"
     }
 
     private lateinit var store: ConversationStore
     private lateinit var config: ApiConfig
     private val handler = Handler(Looper.getMainLooper())
     private val adbHelper = AdbHelper()
+
+    /** 防止代码设 isChecked 时触发 listener 的标志 */
+    private var skipToggleListener = false
 
     // 测试状态
     private var testAppType: AIConversation.AppType = AIConversation.AppType.DEEPSEEK
@@ -95,7 +102,9 @@ class MainActivity : AppCompatActivity() {
         initViews()
         requestRequiredPermissions()
         requestBatteryOptimization()
-        updateUI()
+
+        // 初始化UI（不会触发listener因为 skipToggleListener = true）
+        refreshStatusUI()
     }
 
     private fun initViews() {
@@ -116,16 +125,19 @@ class MainActivity : AppCompatActivity() {
                 stopServer()
             } else {
                 startServer()
-                handler.postDelayed({ updateUI() }, 2000)
+                handler.postDelayed({ refreshStatusUI() }, 2000)
             }
         }
 
-        // 核心改动：点击"开始捕获" → 自动最小化
+        // ★ 核心按钮：唯一的捕获开关
         btnToggleCapture.setOnCheckedChangeListener { _, isChecked ->
+            // 如果是代码设置的状态（非用户点击），跳过
+            if (skipToggleListener) return@setOnCheckedChangeListener
+
             if (isChecked) {
-                startCaptureAndMinimize()
+                handleStartCapture()
             } else {
-                stopCapture()
+                handleStopCapture()
             }
         }
 
@@ -133,46 +145,37 @@ class MainActivity : AppCompatActivity() {
         btnViewLogs.setOnClickListener { startActivity(Intent(this, LogActivity::class.java)) }
         btnTestConnection.setOnClickListener { testAndRun() }
         btnBatteryOpt.setOnClickListener { openBatteryOptimizationSettings() }
-
-        if (!isAccessibilityServiceEnabled()) {
-            btnToggleCapture.isChecked = false
-            tvCaptureStatus.text = "🔴 无障碍服务未启用"
-        }
     }
 
-    // ===================== 核心流程：开始捕获并最小化 =====================
+    // ===================== 核心：开始/停止捕获 =====================
 
     /**
-     * 开始捕获流程：
-     *   1. 检查无障碍权限
-     *   2. 首次无权限 → 提示去开启
-     *   3. 已有权限 → 直接开启捕获 → 最小化APP
-     *   4. 后台服务自动打开DeepSeek和豆包
+     * 用户点击"开始捕获"的入口。
+     * 统一入口，只从这里弹对话框，确保不会弹两个。
      */
-    private fun startCaptureAndMinimize() {
-        if (!isAccessibilityServiceEnabled()) {
-            // 无障碍权限未开启
-            val prefs = getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
-            val hadPermissionBefore = prefs.getBoolean(PREF_ACCESSIBILITY_GRANTED, false)
+    private fun handleStartCapture() {
+        val enabled = checkAccessibilityServiceEnabled()
 
-            if (hadPermissionBefore) {
-                // 之前开过但现在没开（可能被关闭了），直接最小化让用户知道需要重新开启
-                btnToggleCapture.isChecked = false
-                Toast.makeText(this, "⚠️ 无障碍服务被关闭了，请重新开启", Toast.LENGTH_LONG).show()
-                BackgroundMonitorService.showNotification(
-                    this, "⚠️ 需要无障碍权限", "无障碍服务未启用，请手动开启"
-                )
-                openAccessibilitySettings()
-                return
-            }
+        Log.d(TAG, "handleStartCapture: accessibility enabled = $enabled")
 
-            // 首次使用，提示用户去开启无障碍服务
+        if (!enabled) {
+            // 无障碍未开启 → 把按钮弹回去，弹一个对话框
+            skipToggleListener = true
             btnToggleCapture.isChecked = false
-            showFirstTimeAccessibilityDialog()
+            skipToggleListener = false
+
+            showAccessibilityNeededDialog()
             return
         }
 
-        // 无障碍权限OK → 开启捕获
+        // 无障碍OK → 开启捕获
+        doStartCapture()
+    }
+
+    /**
+     * 实际执行开始捕获。
+     */
+    private fun doStartCapture() {
         AICaptureService.setCaptureEnabled(true)
         AICaptureService.setConversationStore(store)
 
@@ -199,37 +202,77 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 首次提示无障碍权限对话框。
-     */
-    private fun showFirstTimeAccessibilityDialog() {
-        AlertDialog.Builder(this)
-            .setTitle("🔑 首次使用 - 需要无障碍权限")
-            .setMessage(
-                "ApiAPK 需要无障碍服务权限来捕获AI应用的对话内容。\n\n" +
-                "操作步骤：\n" +
-                "1. 点击\"去设置\"\n" +
-                "2. 找到 \"ApiAPK\" 并开启\n" +
-                "3. 返回本APP，再次点击\"开始捕获\"\n\n" +
-                "💡 开启后，以后使用就不再需要这个提示了。\n" +
-                "💡 支持分屏运行豆包+DeepSeek，两个APP的对话都会被捕获。"
-            )
-            .setPositiveButton("去设置") { _, _ ->
-                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-            }
-            .setNegativeButton("稍后再说", null)
-            .setCancelable(false)
-            .show()
-    }
-
-    /**
      * 停止捕获。
      */
-    private fun stopCapture() {
+    private fun handleStopCapture() {
         AICaptureService.setCaptureEnabled(false)
         BackgroundMonitorService.stopAutoCapture()
         tvCaptureStatus.text = "🔴 AI捕获已关闭"
         Toast.makeText(this, "AI捕获已关闭", Toast.LENGTH_SHORT).show()
     }
+
+    // ===================== 无障碍服务检测（修复版）=====================
+
+    /**
+     * 检查无障碍服务是否已启用。
+     *
+     * 修复：Android 系统在 Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES 中存储的格式可能是：
+     *   - "com.apiapk/com.apiapk.service.AICaptureService"  (完整组件名，多数设备)
+     *   - "com.apiapk/.service.AICaptureService"            (短格式，部分设备)
+     *   - "com.apiapk/com.apiapk.service.AICaptureService:com.apiapk" (带user，多用户设备)
+     *
+     * 所以必须同时检查多种格式。
+     */
+    private fun checkAccessibilityServiceEnabled(): Boolean {
+        val enabledServices = Settings.Secure.getString(
+            contentResolver,
+            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+        ) ?: return false
+
+        Log.d(TAG, "ENABLED_ACCESSIBILITY_SERVICES = $enabledServices")
+
+        // 检查多种可能的格式
+        val patterns = listOf(
+            "$packageName/$SERVICE_CLASS",           // 完整: com.apiapk/com.apiapk.service.AICaptureService
+            "$packageName/.service.AICaptureService",  // 短格式: com.apiapk/.service.AICaptureService
+            SERVICE_CLASS,                             // 只包含类名
+            "AICaptureService"                         // 只包含简单类名
+        )
+
+        for (pattern in patterns) {
+            if (enabledServices.contains(pattern)) {
+                Log.d(TAG, "Accessibility service ENABLED (matched: $pattern)")
+                return true
+            }
+        }
+
+        Log.d(TAG, "Accessibility service NOT enabled (no pattern matched)")
+        return false
+    }
+
+    /**
+     * 显示需要无障碍权限的对话框（唯一入口，不会重复弹）。
+     */
+    private fun showAccessibilityNeededDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("需要无障碍权限")
+            .setMessage(
+                "ApiAPK 需要无障碍服务权限来捕获AI应用的对话内容。\n\n" +
+                "操作步骤：\n" +
+                "1. 点击下方\"去设置\"\n" +
+                "2. 在列表中找到 \"ApiAPK\"\n" +
+                "3. 点击开启\n" +
+                "4. 按返回键回到本APP\n\n" +
+                "💡 只需设置一次，以后不会再提示。"
+            )
+            .setPositiveButton("去设置") { _, _ ->
+                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    // ===================== 权限和服务器 =====================
 
     private fun requestRequiredPermissions() {
         val perms = mutableListOf<String>()
@@ -283,18 +326,16 @@ class MainActivity : AppCompatActivity() {
         } else {
             startService(intent)
         }
-        updateUI()
         Toast.makeText(this, "服务器+后台监控已启动 端口: ${config.serverPort}", Toast.LENGTH_SHORT).show()
     }
 
     private fun stopServer() {
         val intent = Intent(this, ApiServerService::class.java).apply { action = "STOP" }
         startService(intent)
-        updateUI()
         Toast.makeText(this, "服务器已停止", Toast.LENGTH_SHORT).show()
     }
 
-    // ===================== 手动测试（保留可选功能） =====================
+    // ===================== 手动测试 =====================
 
     private fun testAndRun() {
         btnTestConnection.isEnabled = false
@@ -329,9 +370,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun runEndToEndTest() {
-        if (!isAccessibilityServiceEnabled()) {
+        if (!checkAccessibilityServiceEnabled()) {
             Toast.makeText(this, "⚠️ 请先开启无障碍服务", Toast.LENGTH_SHORT).show()
-            openAccessibilitySettings()
+            showAccessibilityNeededDialog()
             return
         }
 
@@ -409,13 +450,11 @@ class MainActivity : AppCompatActivity() {
 
                 runOnUiThread { tvTestStep.text = "③ 等待AI回复（最长30秒）..." }
 
-                var foundResponse = false
                 val startTime = System.currentTimeMillis()
                 val timeout = 30000L
 
                 while (System.currentTimeMillis() - startTime < timeout) {
                     if (accumulatedResponse.isNotEmpty()) {
-                        foundResponse = true
                         break
                     }
 
@@ -426,7 +465,6 @@ class MainActivity : AppCompatActivity() {
                             val lastMsg = latestConv.messages.lastOrNull()
                             if (lastMsg != null && lastMsg.role == "assistant" && lastMsg.content.isNotBlank()) {
                                 accumulatedResponse.append(lastMsg.content)
-                                foundResponse = true
                                 break
                             }
                         }
@@ -448,7 +486,7 @@ class MainActivity : AppCompatActivity() {
                             testDialog?.dismiss()
                             testDialog = null
                             cleanupTest()
-                            updateUI()
+                            refreshStatusUI()
                             Toast.makeText(this, "✅ 测试成功！${appDisplayName} 回复已捕获", Toast.LENGTH_LONG).show()
                         }, 3000)
                     } else {
@@ -518,11 +556,16 @@ class MainActivity : AppCompatActivity() {
         handler.removeCallbacksAndMessages(null)
     }
 
-    // ===================== UI 更新 =====================
+    // ===================== UI 刷新（不触发listener）=====================
 
-    private fun updateUI() {
+    /**
+     * 纯粹刷新状态文本，不改变 ToggleButton 的状态，不弹窗。
+     * 这样 onResume 时不会误触发自动最小化。
+     */
+    private fun refreshStatusUI() {
         val isServer = ApiServerService.isRunning
         val isBg = BackgroundMonitorService.isRunning
+        val isAccessible = checkAccessibilityServiceEnabled()
 
         tvStatus.text = if (isServer) "🟢 服务器运行中" else "🔴 服务器未启动"
         tvServerUrl.text = "http://localhost:${config.serverPort}"
@@ -538,31 +581,18 @@ class MainActivity : AppCompatActivity() {
         val stats = store.getStats()
         tvStats.text = "会话: ${stats["totalConversations"] ?: 0} | 消息: ${stats["totalMessages"] ?: 0}"
 
-        if (isAccessibilityServiceEnabled()) {
+        // ★ 关键：用 skipToggleListener 防止循环触发
+        if (isAccessible) {
             tvCaptureStatus.text = "🟢 无障碍服务已启用"
+            skipToggleListener = true
             btnToggleCapture.isChecked = true
+            skipToggleListener = false
         } else {
             tvCaptureStatus.text = "🔴 无障碍服务未启用 (点击开启)"
+            skipToggleListener = true
             btnToggleCapture.isChecked = false
-            btnToggleCapture.setOnClickListener { openAccessibilitySettings() }
+            skipToggleListener = false
         }
-    }
-
-    private fun isAccessibilityServiceEnabled(): Boolean {
-        val service = "${packageName}/.service.AICaptureService"
-        val enabled = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
-        return enabled?.contains(service) == true
-    }
-
-    private fun openAccessibilitySettings() {
-        AlertDialog.Builder(this)
-            .setTitle("开启无障碍服务")
-            .setMessage("ApiAPK需要无障碍服务权限来捕获AI应用的对话内容。\n\n请在设置中找到\"ApiAPK\"并开启。\n\n💡 提示：开启后可以分屏运行豆包+DeepSeek，两个APP的对话都会被捕获。")
-            .setPositiveButton("去设置") { _, _ ->
-                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-            }
-            .setNegativeButton("取消", null)
-            .show()
     }
 
     private fun getLocalIpAddress(): String? {
@@ -582,9 +612,12 @@ class MainActivity : AppCompatActivity() {
         } catch (_: Exception) { null }
     }
 
+    /**
+     * onResume 时只刷新状态文字，不自动最小化。
+     */
     override fun onResume() {
         super.onResume()
-        updateUI()
+        refreshStatusUI()
     }
 
     override fun onDestroy() {
