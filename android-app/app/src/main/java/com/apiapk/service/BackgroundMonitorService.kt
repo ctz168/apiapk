@@ -7,26 +7,27 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
+import com.apiapk.model.AIConversation
 import com.apiapk.model.ConversationStore
 import com.apiapk.model.StreamEventBus
-import com.apiapk.service.AICaptureService
+import com.apiapk.util.AdbHelper
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 /**
- * 后台监控服务 - 核心后台存活保障组件。
+ * 后台监控服务 v2 - 自动化流程 + 后台存活保障。
+ *
+ * v2 新增功能：
+ *   - startAutoCapture(): 启动后自动打开DeepSeek和豆包
+ *   - 通知栏实时显示捕获状态
+ *   - 自动检测APP是否安装并提示
  *
  * 功能职责：
- *   1. 前台服务 + 常驻通知，防止被系统回收（stopWithTask=false 确保切到后台不被杀）
+ *   1. 前台服务 + 常驻通知，防止被系统回收
  *   2. 持有 WakeLock 防止CPU休眠
- *   3. 定时心跳检测：确认无障碍服务和API服务器都在运行，如果掉线则自动重启
+ *   3. 定时心跳检测：确认无障碍服务和API服务器都在运行
  *   4. 管理StreamEventBus的生命周期
- *   5. 维护StreamEventBus引用，确保SSE推送不中断
- *
- * 为什么需要这个独立服务？
- *   - AccessibilityService 虽然是系统级服务，但Android 8+ 仍然可能被杀
- *   - ApiServerService 如果没有前台通知也可能在后台被回收
- *   - 此服务作为"守护进程"，确保整个链路不中断
+ *   5. 自动打开目标AI应用进行捕获
  */
 class BackgroundMonitorService : Service() {
 
@@ -35,39 +36,124 @@ class BackgroundMonitorService : Service() {
         private const val NOTIFICATION_ID = 1002
         private const val CHANNEL_ID = "apiapk_bg_monitor"
         private const val WAKELOCK_TAG = "ApiAPK:BackgroundMonitor"
-        private const val HEARTBEAT_INTERVAL_MS = 10000L // 10秒心跳
-        private const val STREAM_IDLE_TIMEOUT_MS = 30000L // 30秒无新delta则发送finish
+        private const val HEARTBEAT_INTERVAL_MS = 10000L
+        private const val STREAM_IDLE_TIMEOUT_MS = 30000L
 
         @Volatile
         var isRunning = false
             private set
 
-        /** 流式输出：跟踪每个app最后一次看到assistant文本的时间（静态，供AICaptureService调用） */
+        /** 自动捕获是否激活 */
+        @Volatile
+        private var autoCaptureActive = false
+
+        /** 各APP的安装/启动状态 */
+        private val appLaunchStatus = mutableMapOf<String, String>() // "deepseek" -> "launched" / "not_installed" / "failed"
+
+        /** 流式输出：跟踪每个app最后一次看到assistant文本的时间 */
         private val lastAssistantActivity = mutableMapOf<String, Long>()
 
-        /** 记录某个app有新的assistant活动（由AICaptureService静态调用） */
         @JvmStatic
         fun recordAssistantActivity(app: String) {
             lastAssistantActivity[app] = System.currentTimeMillis()
+        }
+
+        /**
+         * 启动自动捕获流程。
+         * 由MainActivity在用户点击"开始捕获"后调用。
+         * 该方法会启动后台监控服务（如果未运行），然后自动打开目标APP。
+         */
+        @JvmStatic
+        fun startAutoCapture(context: Context) {
+            autoCaptureActive = true
+            appLaunchStatus.clear()
+
+            // 确保后台监控服务在运行
+            val intent = Intent(context, BackgroundMonitorService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+
+            Log.i(TAG, "Auto capture activated")
+        }
+
+        /**
+         * 停止自动捕获。
+         */
+        @JvmStatic
+        fun stopAutoCapture() {
+            autoCaptureActive = false
+            Log.i(TAG, "Auto capture deactivated")
+        }
+
+        /**
+         * 显示一个一次性通知（从其他组件调用）。
+         */
+        @JvmStatic
+        fun showNotification(context: Context, title: String, text: String) {
+            try {
+                val channelId = "apiapk_capture_status"
+                val notificationId = 2002
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    val channel = NotificationChannel(
+                        channelId,
+                        "ApiAPK 捕获状态",
+                        NotificationManager.IMPORTANCE_DEFAULT
+                    ).apply {
+                        description = "AI应用捕获状态通知"
+                        setShowBadge(true)
+                    }
+                    val nm = context.getSystemService(NotificationManager::class.java)
+                    nm.createNotificationChannel(channel)
+                }
+
+                val notification = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    Notification.Builder(context, channelId)
+                        .setContentTitle(title)
+                        .setContentText(text)
+                        .setSmallIcon(android.R.drawable.ic_menu_info_details)
+                        .setAutoCancel(true)
+                        .build()
+                } else {
+                    @Suppress("DEPRECATION")
+                    Notification.Builder(context)
+                        .setContentTitle(title)
+                        .setContentText(text)
+                        .setSmallIcon(android.R.drawable.ic_menu_info_details)
+                        .setAutoCancel(true)
+                        .setPriority(Notification.PRIORITY_DEFAULT)
+                        .build()
+                }
+
+                val nm = context.getSystemService(NotificationManager::class.java)
+                nm.notify(notificationId, notification)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to show notification: ${e.message}")
+            }
         }
     }
 
     private lateinit var wakeLock: PowerManager.WakeLock
     private lateinit var store: ConversationStore
     private var heartbeatExecutor = Executors.newSingleThreadScheduledExecutor()
-
     private var idleCheckExecutor = Executors.newSingleThreadScheduledExecutor()
+    private var appLauncherExecutor = Executors.newSingleThreadScheduledExecutor()
+    private var adbHelper: AdbHelper? = null
 
     override fun onCreate() {
         super.onCreate()
         store = ConversationStore(this)
+        adbHelper = AdbHelper()
         isRunning = true
 
         acquireWakeLock()
         createNotificationChannel()
         startForegroundNotification()
 
-        Log.i(TAG, "Background Monitor Service created")
+        Log.i(TAG, "Background Monitor Service v2 created")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -78,27 +164,111 @@ class BackgroundMonitorService : Service() {
 
         startHeartbeat()
         startStreamIdleChecker()
-        return START_STICKY // 系统杀掉后会自动重启
+
+        // 如果自动捕获激活，延迟后启动APP
+        if (autoCaptureActive) {
+            scheduleAutoLaunchApps()
+        }
+
+        return START_STICKY
     }
 
     /**
-     * 获取WakeLock防止CPU休眠，确保后台网络和事件处理正常。
-     * 使用PARTIAL_WAKE_LOCK级别，只保持CPU运行，不影响屏幕。
+     * 自动打开目标AI应用。
+     * 延迟2秒后开始，分别打开DeepSeek和豆包。
+     * 打开策略：先打开第一个APP，等5秒再打开第二个（避免冲突）。
      */
+    private fun scheduleAutoLaunchApps() {
+        appLauncherExecutor.schedule({
+            try {
+                val helper = adbHelper ?: AdbHelper()
+
+                // 检查并启动DeepSeek
+                launchTargetApp(helper, AIConversation.AppType.DEEPSEEK)
+
+                // 5秒后启动豆包
+                appLauncherExecutor.schedule({
+                    launchTargetApp(helper, AIConversation.AppType.DOUBAO)
+                }, 5000, TimeUnit.MILLISECONDS)
+
+            } catch (e: Exception) {
+                Log.e(TAG, "Auto launch error: ${e.message}")
+                updateNotification("⚠️ 自动启动失败", "错误: ${e.message}")
+            }
+        }, 2000, TimeUnit.MILLISECONDS)
+    }
+
+    /**
+     * 启动单个目标APP。
+     */
+    private fun launchTargetApp(helper: AdbHelper, appType: AIConversation.AppType) {
+        val appId = appType.identifier
+
+        // 检查是否已安装
+        val installed = helper.isAppInstalled(appType.packageName)
+        if (!installed) {
+            appLaunchStatus[appId] = "not_installed"
+            Log.w(TAG, "[$appId] ${appType.displayName} 未安装")
+            showNotification(
+                this,
+                "⚠️ ${appType.displayName} 未安装",
+                "请先安装 ${appType.displayName}，然后再尝试捕获"
+            )
+            return
+        }
+
+        Log.i(TAG, "[$appId] 正在启动 ${appType.displayName}...")
+        updateNotification("🚀 正在启动 ${appType.displayName}...", "请稍候")
+
+        // 使用monkey启动APP（比am start更可靠）
+        val result = helper.executeShell(
+            "monkey -p ${appType.packageName} -c android.intent.category.LAUNCHER 1"
+        )
+
+        if (result.success || result.stdout.contains("Events injected")) {
+            appLaunchStatus[appId] = "launched"
+            Log.i(TAG, "[$appId] ${appType.displayName} 启动成功")
+            showNotification(
+                this,
+                "✅ ${appType.displayName} 已启动",
+                "正在等待检测窗口内容..."
+            )
+        } else {
+            // 降级方案
+            val fallbackResult = helper.executeShell("am start -n ${appType.packageName}/.MainActivity")
+            if (fallbackResult.success) {
+                appLaunchStatus[appId] = "launched"
+                Log.i(TAG, "[$appId] ${appType.displayName} 启动成功 (fallback)")
+                showNotification(
+                    this,
+                    "✅ ${appType.displayName} 已启动",
+                    "正在等待检测窗口内容..."
+                )
+            } else {
+                appLaunchStatus[appId] = "failed"
+                Log.e(TAG, "[$appId] ${appType.displayName} 启动失败")
+                showNotification(
+                    this,
+                    "❌ ${appType.displayName} 启动失败",
+                    "请手动打开 ${appType.displayName}"
+                )
+            }
+        }
+    }
+
+    // ========== 后台存活机制 ==========
+
     private fun acquireWakeLock() {
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(
             PowerManager.PARTIAL_WAKE_LOCK,
             WAKELOCK_TAG
         ).apply {
-            acquire(12 * 60 * 60 * 1000L) // 最长12小时，系统会自动释放
+            acquire(12 * 60 * 60 * 1000L)
         }
         Log.i(TAG, "WakeLock acquired")
     }
 
-    /**
-     * 创建通知渠道（Android 8+ 必须）
-     */
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
@@ -116,16 +286,12 @@ class BackgroundMonitorService : Service() {
         }
     }
 
-    /**
-     * 启动前台通知 - 包含当前状态和快捷操作按钮。
-     * 通知使用低优先级，不打扰用户。
-     */
     private fun startForegroundNotification() {
         updateNotification("ApiAPK 后台运行中", "服务器: ${if (ApiServerService.isRunning) "🟢 运行中" else "🔴 未启动"}")
     }
 
     /**
-     * 更新通知内容 - 心跳检测时定期刷新状态。
+     * 更新通知内容 - 包含详细的捕获状态。
      */
     private fun updateNotification(title: String, text: String) {
         val notification = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -133,7 +299,7 @@ class BackgroundMonitorService : Service() {
                 .setContentTitle(title)
                 .setContentText(text)
                 .setSmallIcon(android.R.drawable.ic_menu_share)
-                .setOngoing(true) // 不可滑动删除
+                .setOngoing(true)
                 .setSound(null, null)
                 .build()
         } else {
@@ -153,8 +319,7 @@ class BackgroundMonitorService : Service() {
 
     /**
      * 心跳检测 - 每10秒检查一次关键服务状态。
-     * 如果发现服务掉线，尝试自动重启。
-     * 同时更新通知栏状态。
+     * 同时更新通知栏为详细的状态信息。
      */
     private fun startHeartbeat() {
         heartbeatExecutor.scheduleAtFixedRate({
@@ -162,18 +327,38 @@ class BackgroundMonitorService : Service() {
                 val captureActive = AICaptureService.isServiceRunning()
                 val serverActive = ApiServerService.isRunning
                 val config = store.loadConfig()
-
-                // 更新通知
-                val captureStatus = if (captureActive) "🟢" else "🔴"
-                val serverStatus = if (serverActive) "🟢" else "🔴"
                 val eventCount = StreamEventBus.getSubscriberCount()
 
+                // 构建详细的通知内容
+                val captureStatus = if (captureActive) "🟢" else "🔴"
+                val serverStatus = if (serverActive) "🟢" else "🔴"
+
+                // APP启动状态
+                val appStatusBuilder = StringBuilder()
+                for (appType in listOf(AIConversation.AppType.DEEPSEEK, AIConversation.AppType.DOUBAO, AIConversation.AppType.XIAOAI)) {
+                    val appId = appType.identifier
+                    val status = appLaunchStatus[appId]
+                    val statusEmoji = when (status) {
+                        "launched" -> "✅"
+                        "not_installed" -> "❌"
+                        "failed" -> "⚠️"
+                        else -> "⏳"
+                    }
+                    appStatusBuilder.append("${appType.displayName}$statusEmoji ")
+                }
+
+                val subTitle = if (autoCaptureActive) {
+                    "捕获: $captureStatus | 服务器: $serverStatus | SSE: $eventCount"
+                } else {
+                    "捕获: $captureStatus | 服务器: $serverStatus | SSE: $eventCount"
+                }
+
                 updateNotification(
-                    "ApiAPK 后台运行中",
-                    "捕获:$captureStatus 服务器:$serverStatus SSE连接:$eventCount"
+                    "ApiAPK 运行中  $appStatusBuilder",
+                    subTitle
                 )
 
-                // 自动恢复API服务器（如果配置了自动启动）
+                // 自动恢复API服务器
                 if (!serverActive && config.autoStart) {
                     Log.w(TAG, "API server is down, attempting restart...")
                     val restartIntent = Intent(this, ApiServerService::class.java)
@@ -184,7 +369,7 @@ class BackgroundMonitorService : Service() {
                     }
                 }
 
-                Log.d(TAG, "Heartbeat: capture=$captureActive, server=$serverActive, sse=$eventCount")
+                Log.d(TAG, "Heartbeat: capture=$captureActive, server=$serverActive, sse=$eventCount, autoCapture=$autoCaptureActive")
             } catch (e: Exception) {
                 Log.e(TAG, "Heartbeat error: ${e.message}")
             }
@@ -192,9 +377,7 @@ class BackgroundMonitorService : Service() {
     }
 
     /**
-     * 流式空闲检测 - 如果某个app的assistant输出超过30秒没有新delta，
-     * 自动发送一个finish事件，标记当前流式输出结束。
-     * 这确保了客户端不会永远等待一个永远不会结束的流。
+     * 流式空闲检测 - 超时发送finish事件。
      */
     private fun startStreamIdleChecker() {
         idleCheckExecutor.scheduleAtFixedRate({
@@ -207,9 +390,7 @@ class BackgroundMonitorService : Service() {
                 for (app in apps) {
                     val lastActivity = lastAssistantActivity[app] ?: continue
                     if (now - lastActivity > STREAM_IDLE_TIMEOUT_MS) {
-                        // 超时，发送finish
                         Log.d(TAG, "Stream idle timeout for $app, sending finish")
-                        // 获取当前累积文本
                         val recentEvents = StreamEventBus.getRecentEvents(filterApp = app)
                         val lastAccumulated = recentEvents.lastOrNull()?.accumulated ?: ""
 
@@ -239,6 +420,7 @@ class BackgroundMonitorService : Service() {
         try {
             heartbeatExecutor.shutdown()
             idleCheckExecutor.shutdown()
+            appLauncherExecutor.shutdown()
             if (wakeLock.isHeld) {
                 wakeLock.release()
             }
@@ -246,6 +428,7 @@ class BackgroundMonitorService : Service() {
             Log.e(TAG, "Error during cleanup: ${e.message}")
         }
 
+        autoCaptureActive = false
         isRunning = false
         super.onDestroy()
     }

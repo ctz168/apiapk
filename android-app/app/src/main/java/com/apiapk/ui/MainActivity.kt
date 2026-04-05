@@ -13,7 +13,6 @@ import android.os.PowerManager
 import android.provider.Settings
 import android.view.View
 import android.widget.Button
-import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
@@ -34,9 +33,21 @@ import com.apiapk.service.BackgroundMonitorService
 import com.apiapk.util.AdbHelper
 
 /**
- * 主Activity v3 - 自动端到端测试：启动服务后发送"你好"，捕获AI回复，显示结果，提示成功。
+ * 主Activity v4 - 自动化捕获流程。
+ *
+ * 核心改进：
+ *   1. 点击"开始捕获" → 检查无障碍权限 → 最小化APP → 后台自动打开DeepSeek/豆包
+ *   2. 记住无障碍权限状态，首次才提示，以后直接最小化
+ *   3. AICaptureService 首次检测到APP时自动发送"你好"
+ *   4. 通知栏实时显示捕获状态
  */
 class MainActivity : AppCompatActivity() {
+
+    companion object {
+        private const val PREF_NAME = "apiapk_prefs"
+        private const val PREF_ACCESSIBILITY_GRANTED = "accessibility_granted"
+        private const val PREF_CAPTURE_STARTED_BEFORE = "capture_started_before"
+    }
 
     private lateinit var store: ConversationStore
     private lateinit var config: ApiConfig
@@ -46,10 +57,8 @@ class MainActivity : AppCompatActivity() {
     // 测试状态
     private var testAppType: AIConversation.AppType = AIConversation.AppType.DEEPSEEK
     private var testDialog: AlertDialog? = null
-    private var testPhase = 0 // 0=idle, 1=sending, 2=waiting, 3=done
+    private var testPhase = 0
     private var preTestMsgCount = 0
-
-    // StreamEventBus订阅者 - 用于实时接收流式delta
     private var streamSubscriber: StreamEventBus.StreamSubscriber? = null
     private var accumulatedResponse = StringBuilder()
 
@@ -107,29 +116,119 @@ class MainActivity : AppCompatActivity() {
                 stopServer()
             } else {
                 startServer()
-                // 服务启动是异步的，延迟刷新UI让isRunning来得及更新
                 handler.postDelayed({ updateUI() }, 2000)
             }
         }
 
+        // 核心改动：点击"开始捕获" → 自动最小化
         btnToggleCapture.setOnCheckedChangeListener { _, isChecked ->
-            AICaptureService.setCaptureEnabled(isChecked)
-            tvCaptureStatus.text = if (isChecked) "🟢 AI捕获已开启" else "🔴 AI捕获已关闭"
-            Toast.makeText(this, if (isChecked) "AI捕获已开启" else "AI捕获已关闭", Toast.LENGTH_SHORT).show()
+            if (isChecked) {
+                startCaptureAndMinimize()
+            } else {
+                stopCapture()
+            }
         }
 
         btnSettings.setOnClickListener { startActivity(Intent(this, SettingsActivity::class.java)) }
         btnViewLogs.setOnClickListener { startActivity(Intent(this, LogActivity::class.java)) }
         btnTestConnection.setOnClickListener { testAndRun() }
-
-        btnBatteryOpt.setOnClickListener {
-            openBatteryOptimizationSettings()
-        }
+        btnBatteryOpt.setOnClickListener { openBatteryOptimizationSettings() }
 
         if (!isAccessibilityServiceEnabled()) {
             btnToggleCapture.isChecked = false
             tvCaptureStatus.text = "🔴 无障碍服务未启用"
         }
+    }
+
+    // ===================== 核心流程：开始捕获并最小化 =====================
+
+    /**
+     * 开始捕获流程：
+     *   1. 检查无障碍权限
+     *   2. 首次无权限 → 提示去开启
+     *   3. 已有权限 → 直接开启捕获 → 最小化APP
+     *   4. 后台服务自动打开DeepSeek和豆包
+     */
+    private fun startCaptureAndMinimize() {
+        if (!isAccessibilityServiceEnabled()) {
+            // 无障碍权限未开启
+            val prefs = getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+            val hadPermissionBefore = prefs.getBoolean(PREF_ACCESSIBILITY_GRANTED, false)
+
+            if (hadPermissionBefore) {
+                // 之前开过但现在没开（可能被关闭了），直接最小化让用户知道需要重新开启
+                btnToggleCapture.isChecked = false
+                Toast.makeText(this, "⚠️ 无障碍服务被关闭了，请重新开启", Toast.LENGTH_LONG).show()
+                BackgroundMonitorService.showNotification(
+                    this, "⚠️ 需要无障碍权限", "无障碍服务未启用，请手动开启"
+                )
+                openAccessibilitySettings()
+                return
+            }
+
+            // 首次使用，提示用户去开启无障碍服务
+            btnToggleCapture.isChecked = false
+            showFirstTimeAccessibilityDialog()
+            return
+        }
+
+        // 无障碍权限OK → 开启捕获
+        AICaptureService.setCaptureEnabled(true)
+        AICaptureService.setConversationStore(store)
+
+        // 记住已授权过
+        getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE).edit()
+            .putBoolean(PREF_ACCESSIBILITY_GRANTED, true)
+            .apply()
+
+        tvCaptureStatus.text = "🟢 AI捕获已开启"
+
+        // 确保服务器和后台监控都在运行
+        if (!ApiServerService.isRunning) {
+            startServer()
+        }
+
+        // 通知后台服务开始自动检测和启动APP
+        BackgroundMonitorService.startAutoCapture(this)
+
+        // 最小化APP
+        Toast.makeText(this, "✅ 捕获已开启，正在后台工作...", Toast.LENGTH_SHORT).show()
+        handler.postDelayed({
+            moveTaskToBack(true)
+        }, 300)
+    }
+
+    /**
+     * 首次提示无障碍权限对话框。
+     */
+    private fun showFirstTimeAccessibilityDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("🔑 首次使用 - 需要无障碍权限")
+            .setMessage(
+                "ApiAPK 需要无障碍服务权限来捕获AI应用的对话内容。\n\n" +
+                "操作步骤：\n" +
+                "1. 点击\"去设置\"\n" +
+                "2. 找到 \"ApiAPK\" 并开启\n" +
+                "3. 返回本APP，再次点击\"开始捕获\"\n\n" +
+                "💡 开启后，以后使用就不再需要这个提示了。\n" +
+                "💡 支持分屏运行豆包+DeepSeek，两个APP的对话都会被捕获。"
+            )
+            .setPositiveButton("去设置") { _, _ ->
+                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            }
+            .setNegativeButton("稍后再说", null)
+            .setCancelable(false)
+            .show()
+    }
+
+    /**
+     * 停止捕获。
+     */
+    private fun stopCapture() {
+        AICaptureService.setCaptureEnabled(false)
+        BackgroundMonitorService.stopAutoCapture()
+        tvCaptureStatus.text = "🔴 AI捕获已关闭"
+        Toast.makeText(this, "AI捕获已关闭", Toast.LENGTH_SHORT).show()
     }
 
     private fun requestRequiredPermissions() {
@@ -195,12 +294,8 @@ class MainActivity : AppCompatActivity() {
         Toast.makeText(this, "服务器已停止", Toast.LENGTH_SHORT).show()
     }
 
-    // ===================== 连接测试 + 端到端测试 =====================
+    // ===================== 手动测试（保留可选功能） =====================
 
-    /**
-     * 按钮点击入口：先实际ping服务器，再决定是否进入E2E测试。
-     * 用 127.0.0.1 替代 localhost，避免某些Android设备DNS解析问题。
-     */
     private fun testAndRun() {
         btnTestConnection.isEnabled = false
         btnTestConnection.text = "测试中..."
@@ -225,18 +320,14 @@ class MainActivity : AppCompatActivity() {
 
                 if (reachable) {
                     Toast.makeText(this, "✅ 服务器连接成功 (HTTP $statusCode)", Toast.LENGTH_SHORT).show()
-                    // 服务器通了，进入E2E测试选APP
                     runEndToEndTest()
                 } else {
-                    Toast.makeText(this, "❌ 连接失败 (HTTP $statusCode)，请先启动服务器", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, "❌ 连接失败，请先启动服务器", Toast.LENGTH_LONG).show()
                 }
             }
         }.start()
     }
 
-    /**
-     * 端到端测试：选择APP → 发送"你好" → 等待捕获 → 显示结果 → 提示成功
-     */
     private fun runEndToEndTest() {
         if (!isAccessibilityServiceEnabled()) {
             Toast.makeText(this, "⚠️ 请先开启无障碍服务", Toast.LENGTH_SHORT).show()
@@ -262,17 +353,11 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    /**
-     * 执行测试 - 带实时进度对话框。
-     */
     private fun executeTest(appDisplayName: String) {
         testPhase = 1
         accumulatedResponse.clear()
-
-        // 记录当前消息数量，用于检测新消息
         preTestMsgCount = store.getConversationsByApp(testAppType).sumOf { it.messages.size }
 
-        // 构建测试进度对话框
         val dialogView = layoutInflater.inflate(R.layout.dialog_test_progress, null)
         val tvTestTitle = dialogView.findViewById<TextView>(R.id.tv_test_title)
         val tvTestStep = dialogView.findViewById<TextView>(R.id.tv_test_step)
@@ -294,13 +379,10 @@ class MainActivity : AppCompatActivity() {
             }
             .show()
 
-        // 注册StreamEventBus订阅者来接收实时delta
         subscribeToStreamEvents(tvTestResponse, progressBar)
 
-        // 开始测试步骤
         Thread {
             try {
-                // 步骤1: 检查API服务器
                 runOnUiThread { tvTestStep.text = "① 检查API服务器..." }
                 val url = "http://127.0.0.1:${config.serverPort}/api/status"
                 val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
@@ -317,33 +399,26 @@ class MainActivity : AppCompatActivity() {
                     return@Thread
                 }
 
-                // 步骤2: 发送"你好"到AI应用
                 runOnUiThread { tvTestStep.text = "② 启动 ${appDisplayName} 并发送\"你好\"..." }
                 Thread.sleep(500)
 
                 val sent = adbHelper.sendViaAdb(testAppType, "你好")
                 if (!sent) {
-                    runOnUiThread {
-                        tvTestStep.text = "⚠️ ADB发送失败，尝试通过API发送..."
-                    }
+                    runOnUiThread { tvTestStep.text = "⚠️ ADB发送失败，尝试通过API发送..." }
                 }
 
-                // 步骤3: 等待捕获AI回复
                 runOnUiThread { tvTestStep.text = "③ 等待AI回复（最长30秒）..." }
 
-                // 轮询检测是否有新的assistant消息
                 var foundResponse = false
                 val startTime = System.currentTimeMillis()
-                val timeout = 30000L // 30秒超时
+                val timeout = 30000L
 
                 while (System.currentTimeMillis() - startTime < timeout) {
-                    // 检查流式累积内容
                     if (accumulatedResponse.isNotEmpty()) {
                         foundResponse = true
                         break
                     }
 
-                    // 检查ConversationStore中是否有新消息
                     val currentMsgCount = store.getConversationsByApp(testAppType).sumOf { it.messages.size }
                     if (currentMsgCount > preTestMsgCount) {
                         val latestConv = store.getLatestConversation(testAppType)
@@ -360,7 +435,6 @@ class MainActivity : AppCompatActivity() {
                     Thread.sleep(800)
                 }
 
-                // 步骤4: 显示结果
                 runOnUiThread {
                     progressBar.visibility = View.GONE
                     tvTestResponse.visibility = View.VISIBLE
@@ -370,13 +444,12 @@ class MainActivity : AppCompatActivity() {
                         tvTestStep.text = "✅ 捕获成功！"
                         tvTestResponse.text = "📝 AI回复：\n\n${response}"
 
-                        // 3秒后自动关闭并提示测试成功
                         handler.postDelayed({
                             testDialog?.dismiss()
                             testDialog = null
                             cleanupTest()
                             updateUI()
-                            Toast.makeText(this, "✅ 端到端测试成功！${appDisplayName} 回复已捕获", Toast.LENGTH_LONG).show()
+                            Toast.makeText(this, "✅ 测试成功！${appDisplayName} 回复已捕获", Toast.LENGTH_LONG).show()
                         }, 3000)
                     } else {
                         tvTestStep.text = "⏱️ 等待超时"
@@ -400,14 +473,10 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
-    /**
-     * 订阅StreamEventBus，实时接收流式delta并更新UI。
-     */
     private fun subscribeToStreamEvents(
         tvResponse: TextView,
         progressBar: ProgressBar
     ) {
-        // 清理之前的订阅
         streamSubscriber?.let { StreamEventBus.unsubscribe(it) }
 
         val appId = testAppType.identifier
@@ -416,14 +485,12 @@ class MainActivity : AppCompatActivity() {
                 if (delta.app != appId) return
 
                 runOnUiThread {
-                    // 第一个delta到达时显示响应区域
                     if (accumulatedResponse.isEmpty()) {
                         tvResponse.visibility = View.VISIBLE
                     }
 
                     if (delta.delta.isNotEmpty()) {
                         accumulatedResponse.append(delta.delta)
-                        // 实时更新显示（截取前500字避免UI卡顿）
                         val display = accumulatedResponse.toString().take(500)
                         tvResponse.text = "📝 AI回复（实时）：\n\n$display"
                         if (accumulatedResponse.length > 500) {
@@ -443,9 +510,6 @@ class MainActivity : AppCompatActivity() {
         StreamEventBus.subscribe(streamSubscriber!!)
     }
 
-    /**
-     * 清理测试状态。
-     */
     private fun cleanupTest() {
         testPhase = 0
         streamSubscriber?.let { StreamEventBus.unsubscribe(it) }
@@ -469,7 +533,6 @@ class MainActivity : AppCompatActivity() {
         }
 
         btnToggleServer.text = if (isServer) "停止服务器" else "启动服务器"
-
         tvBgStatus.text = if (isBg) "🟢 后台监控运行中" else "🔴 后台监控未启动"
 
         val stats = store.getStats()
